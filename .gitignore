@@ -1,0 +1,35 @@
+# MATLAB generated outputs and editor backups
+*.mat
+*.fig
+*.asv
+*.m~
+*.log
+
+# Rendered reports and figures
+*.pdf
+*.docx
+*.tex
+*.png
+
+# Project-generated results and temporary material
+sun_abd_results/
+tmp/
+_qa_advisor_update/
+
+# Tool, cache, and local-environment material
+.codex/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Secrets and local configuration
+*.key
+*.pem
+*.p12
+*.pfx
+credentials*.json
+secrets*.json
