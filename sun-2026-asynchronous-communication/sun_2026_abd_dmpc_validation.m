@@ -25,9 +25,13 @@ tableI=[1183.5 3.0 .35 .57 -245 245;1228.7 3.1 .36 .51 -265 265; ...
         1283.2 3.2 .34 .61 -300 300;1342.8 3.4 .37 .59 -350 350];
 C.m=tableI(:,1); C.eta=tableI(:,2); C.r=tableI(:,3);
 C.tau=tableI(:,4); C.lo=tableI(:,5); C.hi=tableI(:,6);
-% Explicit assumptions: bounds and tPrime not tabulated; 10.5 from Fig.4.
+% Explicit assumptions: bounds and tPrime not tabulated. The virtual leader
+% is at 10 m/s before t=0, jumps to 10.5 m/s at t=0, then decelerates
+% uniformly to 9.5 m/s over the next 2 s and remains at that speed.
 C.vmin=0; C.vmax=30; C.smin=5; C.smax=15;
-C.v0=10; C.vf=10.5; C.tPrime=-0.1;
+C.v0=10; C.vJump=10.5; C.vf=9.5; C.leaderDecelDuration=2;
+C.leaderAcceleration=(C.vf-C.vJump)/C.leaderDecelDuration;
+C.tPrime=-0.1;
 % New, explicit design choice (not a value reported by Sun et al.):
 % the first physical follower is anchored to the virtual leader by this
 % allowable position-error envelope. The predecessor string starts at i=2.
@@ -51,7 +55,7 @@ elseif C.anchoredString
 end
 assert(isfinite(Tsim)&&Tsim>0&&abs(Tsim/C.h-round(Tsim/C.h))<1e-8);
 N=C.N; Np=C.Np; dt=C.dt; h=C.h;
-Teq=eq_torque(C.vf,C); T0=eq_torque(C.v0,C);
+Tjump=eq_torque(C.vJump,C); T0=eq_torque(C.v0,C);
 
 %% Initialization
 % The engineering warm start is explicitly separate from the literal OCP2.
@@ -63,7 +67,7 @@ end
 xStart=[leader_position(tc,C)-(1:N)*C.d; C.v0*ones(1,N); T0'];
 centralObj=@(z) central_cost(z,xStart,tc,hc,H,C);
 centralCon=@(z) central_constraints(z,xStart,tc,hc,H,C);
-z0=repmat((Teq./C.hi)',H,1);
+z0=repmat((Tjump./C.hi)',H,1);
 [zc,initLog]=solve_checked(centralObj,centralCon,z0(:), ...
     repmat((C.lo./C.hi)',H,1),ones(H,N),C,'initialization');
 Uc=reshape(zc,H,N).*C.hi'; Xc=cell(1,N);
@@ -96,7 +100,8 @@ end
 nEvents=round(Tsim/h); time=(0:nEvents)*h;
 xHist=nan(3,N,nEvents+1); xHist(:,:,1)=x;
 uHist=nan(N,nEvents); leaderHist=zeros(3,nEvents+1);
-leaderHist(1,:)=leader_position(time,C); leaderHist(2,:)=C.vf;
+leaderHist(1,:)=leader_position(time,C);
+leaderHist(2,:)=leader_velocity(time,C);
 uHeld=Uc(initialUIndex,:)'; slope=zeros(3,N); updateCount=zeros(1,N);
 oddUpdate=false(N,nEvents); evenUpdate=false(N,nEvents);
 solverLog=cell(N,nEvents); maxResidual=initLog.violation;
@@ -280,10 +285,11 @@ e=(X(:,end)-xd(:,end))./C.scale;
 end
 
 function J=central_cost(z,x,t,h,H,C)
-U=reshape(z,H,C.N).*C.hi'; J=0; te=eq_torque(C.vf,C);
+U=reshape(z,H,C.N).*C.hi'; J=0;
+te=eq_torque(leader_velocity(t+(0:H-1)*h,C),C);
 for i=1:C.N
     X=rollout(x(:,i),U(:,i),i,h,C); xd=desired(i,t+(0:H)*h,C);
-    J=J+C.Q(1)*sum(abs(U(:,i)-te(i)))+C.Q(2)*sum(vecnorm(X(:,1:H)-xd(:,1:H)));
+    J=J+C.Q(1)*sum(abs(U(:,i)-te(i,:).'))+C.Q(2)*sum(vecnorm(X(:,1:H)-xd(:,1:H)));
 end
 end
 
@@ -330,13 +336,17 @@ for j=1:numel(times)
     assert(a>=-1e-7,'Reference requested before its timestamp.');
     k=min(floor(a+1e-8),size(plan.x,2)-1); rem=times(j)-(plan.t+k*C.dt);
     xx=plan.x(:,k+1);
-    if k<numel(plan.u), u=plan.u(k+1); else, te=eq_torque(C.vf,C); u=te(i); end
+    if k<numel(plan.u)
+        u=plan.u(k+1);
+    else
+        te=eq_torque(leader_velocity(times(j),C),C); u=te(i);
+    end
     Y(:,j)=xx+rem*dynamics(xx,u,i,C);
 end
 end
 
 function u=sample_inputs(plan,times,i,C)
-te=eq_torque(C.vf,C); u=te(i)*ones(numel(times),1);
+te=eq_torque(leader_velocity(times,C),C); u=te(i,:).';
 for j=1:numel(times)
     k=floor((times(j)-plan.t)/C.dt+1e-8)+1;
     if k>=1&&k<=numel(plan.u), u(j)=plan.u(k); end
@@ -354,9 +364,28 @@ function T=eq_torque(v,C)
 T=C.r./C.eta.*(C.Cd*v^2+C.m*C.g*C.fR);
 end
 function xd=desired(i,t,C)
-if i==0, torque=0; else, te=eq_torque(C.vf,C); torque=te(i); end
-xd=[leader_position(t,C)-i*C.d;C.vf*ones(size(t));torque*ones(size(t))];
+v=leader_velocity(t,C);
+if i==0
+    torque=zeros(size(t));
+else
+    te=eq_torque(v,C); torque=te(i,:);
+end
+xd=[leader_position(t,C)-i*C.d;v;torque];
+end
+function v=leader_velocity(t,C)
+v=C.vf*ones(size(t));
+past=t<0; decelerating=t>=0 & t<C.leaderDecelDuration;
+v(past)=C.v0;
+v(decelerating)=C.vJump+C.leaderAcceleration*t(decelerating);
 end
 function p=leader_position(t,C)
-p=C.vf*t; p(t<0)=C.v0*t(t<0);
+p=zeros(size(t));
+past=t<0; decelerating=t>=0 & t<=C.leaderDecelDuration;
+p(past)=C.v0*t(past);
+p(decelerating)=C.vJump*t(decelerating) ...
+    + 0.5*C.leaderAcceleration*t(decelerating).^2;
+pAtEnd=C.vJump*C.leaderDecelDuration ...
+    + 0.5*C.leaderAcceleration*C.leaderDecelDuration^2;
+steady=t>C.leaderDecelDuration;
+p(steady)=pAtEnd+C.vf*(t(steady)-C.leaderDecelDuration);
 end
