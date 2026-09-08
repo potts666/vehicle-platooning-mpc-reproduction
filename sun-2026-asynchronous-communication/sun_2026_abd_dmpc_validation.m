@@ -361,7 +361,7 @@ function f=dynamics(x,u,i,C)
 f=[x(2);(C.eta(i)/C.r(i)*x(3)-C.Cd*x(2)^2)/C.m(i)-C.g*C.fR;(u-x(3))/C.tau(i)];
 end
 function T=eq_torque(v,C)
-T=C.r./C.eta.*(C.Cd*v^2+C.m*C.g*C.fR);
+T=C.r./C.eta.*(C.Cd*v.^2+C.m*C.g*C.fR);
 end
 function xd=desired(i,t,C)
 v=leader_velocity(t,C);
